@@ -2,10 +2,16 @@
 import express from 'express';
 import bcrypt from 'bcrypt';
 import { prisma } from './prisma';
+import jwt from 'jsonwebtoken'; 
+import { Request, Response, NextFunction } from 'express';
 
 // 2. Create the app and set up middleware
 const app = express();
 const PORT = 3000;
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET) {
+  throw new Error('JWT_SECRET is not set in .env');
+}
 app.use(express.json());
 
 // 3. Routes
@@ -32,6 +38,7 @@ app.post('/signup', async (req, res) => {
     res.status(500).json({ message: 'Something went wrong' });
   }
 });
+
 app.post('/login', async (req, res) => {
   const { email, password } = req.body;
 
@@ -48,9 +55,39 @@ app.post('/login', async (req, res) => {
     res.status(401).json({ message: 'Invalid email or password' });
     return;
   }
+  const token = jwt.sign({ userId: user.id }, JWT_SECRET, { expiresIn: '1h' });
 
-  res.status(200).json({ message: 'Login successful' });
+  res.status(200).json({ message: 'Login successful', token });
 });
+
+const requireAuth = (req: Request, res: Response, next: NextFunction) => {
+  const header = req.headers.authorization;
+
+  if (!header || !header.startsWith('Bearer')) {
+    res.status(401).json({ message: 'Missing token' });
+    return;
+  }
+
+  const token = header.split(' ')[1];
+
+  try {
+    const payload = jwt.verify(token, JWT_SECRET) as { userId: string };
+    res.locals.userId = payload.userId;
+    next();
+  } catch {
+    res.status(401).json({ message: 'Invalid or expired token' });
+  }
+};
+
+app.get('/me', requireAuth, async (req, res) => {
+  const user = await prisma.user.findUnique({
+    where: { id: res.locals.userId },
+    select: { id: true, email: true, createdAt: true },
+  });
+
+  res.status(200).json(user);
+});
+
 // 4. Start the server (always last)
 app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
