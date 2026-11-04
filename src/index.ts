@@ -88,6 +88,26 @@ app.get('/me', requireAuth, async (req, res) => {
   res.status(200).json(user);
 });
 
+app.post('/organizations', requireAuth, async (req, res) => {
+  const { name } = req.body;
+
+  if (typeof name !== 'string' || name.trim() === '') {
+    res.status(400).json({ message: 'Organization name is required' });
+    return;
+  }
+
+  const organization = await prisma.organization.create({
+    data: {
+      name: name.trim(),
+      memberships: {
+        create: { userId: res.locals.userId, role: 'OWNER' },
+      },
+    },
+  });
+
+  res.status(201).json({ id: organization.id, name: organization.name });
+});
+
 // 4. Start the server (always last)
 app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
