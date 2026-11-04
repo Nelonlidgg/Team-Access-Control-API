@@ -108,6 +108,68 @@ app.post('/organizations', requireAuth, async (req, res) => {
   res.status(201).json({ id: organization.id, name: organization.name });
 });
 
+const ROLE_RANK = { VIEWER: 1, MEMBER: 2, ADMIN: 3, OWNER: 4 } as const;
+type RoleName = keyof typeof ROLE_RANK;
+
+const requireRole = (minRole: RoleName) => {
+  return async (req: Request, res: Response, next: NextFunction) => {
+    const organizationId = String(req.params.orgId);
+
+    const membership = await prisma.membership.findUnique({
+      where: {
+        userId_organizationId: { userId: res.locals.userId, organizationId },
+      },
+    });
+
+    if (!membership) {
+      res.status(403).json({ message: 'You are not a member of this organization' });
+      return;
+    }
+
+    if (ROLE_RANK[membership.role] < ROLE_RANK[minRole]) {
+      res.status(403).json({ message: 'Your role does not allow this action' });
+      return;
+    }
+
+    res.locals.organizationId = organizationId;
+    res.locals.role = membership.role;
+    next();
+  };
+};
+
+app.get('/organizations', requireAuth, async (req, res) => {
+  const memberships = await prisma.membership.findMany({
+    where: { userId: res.locals.userId },
+    include: { organization: true },
+  });
+
+  res.status(200).json(
+    memberships.map((m) => ({
+      id: m.organization.id,
+      name: m.organization.name,
+      role: m.role,
+    }))
+  );
+});
+
+app.get('/organizations/:orgId/members', requireAuth, requireRole('VIEWER'), async (req, res) => {
+  const members = await prisma.membership.findMany({
+    where: { organizationId: res.locals.organizationId },
+    select: { role: true, user: { select: { id: true, email: true } } },
+  });
+
+  res.status(200).json(members);
+});
+
+app.delete('/organizations/:orgId', requireAuth, requireRole('OWNER'), async (req, res) => {
+  await prisma.$transaction([
+    prisma.membership.deleteMany({ where: { organizationId: res.locals.organizationId } }),
+    prisma.organization.delete({ where: { id: res.locals.organizationId } }),
+  ]);
+
+  res.status(204).send();
+});
+
 // 4. Start the server (always last)
 app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
