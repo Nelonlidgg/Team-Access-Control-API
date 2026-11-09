@@ -30,6 +30,7 @@ model Organization {
   name        String
   createdAt   DateTime     @default(now())
   memberships Membership[]
+  invitations Invitation[]
 }
 
 model Membership {
@@ -42,4 +43,16 @@ model Membership {
   createdAt      DateTime     @default(now())
 
   @@unique([userId, organizationId])
+}
+
+model Invitation {
+  id             String       @id @default(uuid())
+  email          String
+  role           Role
+  token          String       @unique
+  expiresAt      DateTime
+  acceptedAt     DateTime?
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  createdAt      DateTime     @default(now())
 }

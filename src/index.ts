@@ -4,6 +4,7 @@ import bcrypt from 'bcrypt';
 import { prisma } from './prisma';
 import jwt from 'jsonwebtoken'; 
 import { Request, Response, NextFunction } from 'express';
+import crypto from 'crypto';
 
 // 2. Create the app and set up middleware
 const app = express();
@@ -168,6 +169,81 @@ app.delete('/organizations/:orgId', requireAuth, requireRole('OWNER'), async (re
   ]);
 
   res.status(204).send();
+});
+
+const INVITABLE_ROLES = ['ADMIN', 'MEMBER', 'VIEWER'];
+
+app.post('/organizations/:orgId/invitations', requireAuth, requireRole('ADMIN'), async (req, res) => {
+  const { email, role } = req.body;
+
+  if (typeof email !== 'string' || !email.includes('@') || !INVITABLE_ROLES.includes(role)) {
+    res.status(400).json({ message: 'A valid email and a role of ADMIN, MEMBER or VIEWER are required' });
+    return;
+  }
+
+  const token = crypto.randomBytes(32).toString('hex');
+  const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+
+  const invitation = await prisma.invitation.create({
+    data: {
+      email: email.trim().toLowerCase(),
+      role,
+      token,
+      expiresAt,
+      organizationId: res.locals.organizationId,
+    },
+  });
+
+  res.status(201).json({ id: invitation.id, email: invitation.email, role: invitation.role, token, expiresAt });
+});
+
+app.post('/invitations/accept', requireAuth, async (req, res) => {
+  const { token } = req.body;
+
+  if (typeof token !== 'string') {
+    res.status(400).json({ message: 'Token is required' });
+    return;
+  }
+
+  const invitation = await prisma.invitation.findUnique({ where: { token } });
+
+  if (!invitation) {
+    res.status(404).json({ message: 'Invitation not found' });
+    return;
+  }
+
+  if (invitation.acceptedAt || invitation.expiresAt < new Date()) {
+    res.status(410).json({ message: 'Invitation has expired or was already used' });
+    return;
+  }
+
+  const user = await prisma.user.findUnique({ where: { id: res.locals.userId } });
+
+  if (!user || user.email.toLowerCase() !== invitation.email) {
+    res.status(403).json({ message: 'This invitation was sent to a different email' });
+    return;
+  }
+
+  try {
+    await prisma.$transaction([
+      prisma.membership.create({
+        data: { userId: user.id, organizationId: invitation.organizationId, role: invitation.role },
+      }),
+      prisma.invitation.update({
+        where: { id: invitation.id },
+        data: { acceptedAt: new Date() },
+      }),
+    ]);
+  } catch (error) {
+    if ((error as { code?: string }).code === 'P2002') {
+      res.status(409).json({ message: 'You are already a member of this organization' });
+      return;
+    }
+    res.status(500).json({ message: 'Something went wrong' });
+    return;
+  }
+
+  res.status(200).json({ organizationId: invitation.organizationId, role: invitation.role });
 });
 
 // 4. Start the server (always last)
